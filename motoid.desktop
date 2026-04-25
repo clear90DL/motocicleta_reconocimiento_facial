@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=MotoID Login
+Comment=Sistema de encendido facial - arranca automaticamente
+Exec=/bin/bash -c "sleep 5 && cd /home/clau/Desktop/motocicleta_reconocimiento_facial-main && /home/clau/Desktop/motocicleta_reconocimiento_facial-main/mi_entorno/bin/python main.py"
+X-GNOME-Autostart-enabled=true
