@@ -1,19 +1,24 @@
 ﻿import time
+
 try:
     import RPi.GPIO as GPIO  # type: ignore
     RPI = True
-except:
+except ImportError:
     RPI = False
+
+
 def activar_rele():
     if not RPI:
         print('Simulación: Relé activado')
         return
 
     GPIO.setmode(GPIO.BCM)
-    GPIO.setup(17, GPIO.OUT)
 
-    GPIO.output(17, GPIO.HIGH)
+    PIN_RELE = 21
+    GPIO.setup(PIN_RELE, GPIO.OUT)
+
+    GPIO.output(PIN_RELE, GPIO.HIGH)
     time.sleep(3)
-    GPIO.output(17, GPIO.LOW)
+    GPIO.output(PIN_RELE, GPIO.LOW)
 
     GPIO.cleanup()

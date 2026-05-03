@@ -6,12 +6,16 @@ import shutil
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
+from gpio_control import activar_rele
 
 from entrenamiento import entrenar_modelo
 from login import iniciar_sesion_thread
 from registro import registrar_usuario_thread
 from usuarios import cargar_usuarios
+import time
 
+ultimo_uso = 0
+cooldown = 10  # segundos
 CONTRASENA_ADMIN = "123"
 
 # ─── Paleta ────────────────────────────────────────────────────────────
@@ -91,6 +95,65 @@ class NeonButton(tk.Canvas):
         self._enabled = v
         self._draw(False)
 
+
+# ─── Tecla numérica táctil (nivel módulo) ─────────────────────────────
+class TeclaNum(tk.Frame):
+    """Tecla grande para teclado numérico táctil.
+    Usa Frame+Label: estable en Python 3.13 (evita bug de tk.Canvas)."""
+    def __init__(self, parent, texto, comando, color=None,
+                 ancho=None, alto=None, font=None):
+        self._color   = color or ACCENT2
+        _w            = ancho or sc(82)
+        _h            = alto  or sc(58)
+        self._cmd     = comando
+        self._font    = font or ("Courier New", sc(18), "bold")
+        self._pressed = False
+
+        super().__init__(parent, bg=self._color,
+                         width=_w, height=_h, cursor="hand2")
+        self.pack_propagate(False)
+
+        self._inner = tk.Frame(self, bg=CARD)
+        self._inner.pack(fill="both", expand=True, padx=sc(2), pady=sc(2))
+        self._inner.pack_propagate(False)
+
+        self._lbl = tk.Label(
+            self._inner, text=texto, font=self._font,
+            bg=CARD, fg=self._color, cursor="hand2"
+        )
+        self._lbl.pack(fill="both", expand=True)
+
+        for w in (self, self._inner, self._lbl):
+            w.bind("<Enter>",           self._on_enter)
+            w.bind("<Leave>",           self._on_leave)
+            w.bind("<Button-1>",        self._on_press)
+            w.bind("<ButtonRelease-1>", self._on_release)
+
+    def _on_enter(self, _=None):
+        if not self._pressed:
+            self._inner.config(bg="#1E1E1E")
+            self._lbl.config(bg="#1E1E1E")
+
+    def _on_leave(self, _=None):
+        if not self._pressed:
+            self._inner.config(bg=CARD)
+            self._lbl.config(bg=CARD)
+
+    def _on_press(self, _=None):
+        self._pressed = True
+        self._inner.config(bg=self._color)
+        self._lbl.config(bg=self._color, fg=BG)
+        self.after(130, self._ejecutar)
+
+    def _ejecutar(self):
+        if self._cmd:
+            self._cmd()
+        self._pressed = False
+        self._inner.config(bg=CARD)
+        self._lbl.config(bg=CARD, fg=self._color)
+
+    def _on_release(self, _=None):
+        pass
 
 # ─── Utilidades ────────────────────────────────────────────────────────
 def centrar(win, w, h):
@@ -179,29 +242,360 @@ def pedir_contrasena():
     dlg.resizable(False, False)
     dlg.transient(root)
     dlg.focus()
-    centrar(dlg, sc(340), sc(210))
+    centrar(dlg, sc(360), sc(520))
+
     outer = tk.Frame(dlg, bg=ACCENT, padx=1, pady=1)
     outer.pack(fill="both", expand=True, padx=sc(8), pady=sc(8))
-    inner = tk.Frame(outer, bg=BG, padx=sc(20), pady=sc(20))
+    inner = tk.Frame(outer, bg=BG, padx=sc(18), pady=sc(16))
     inner.pack(fill="both", expand=True)
-    tk.Label(inner, text="// ACCESO ADMIN", font=FONT_LABEL, bg=BG, fg=ACCENT).pack(anchor="w")
-    tk.Label(inner, text="Contrasena:", font=FONT_SMALL, bg=BG, fg=SUBTEXT).pack(anchor="w", pady=(sc(10), sc(2)))
+
+    # ── Título ──
+    tk.Label(inner, text="// ACCESO ADMIN", font=FONT_LABEL,
+             bg=BG, fg=ACCENT).pack(anchor="w")
+    tk.Frame(inner, bg=ACCENT, height=1).pack(fill="x", pady=(sc(4), sc(10)))
+
+    # ── Display de contraseña ──
+    tk.Label(inner, text="Contrasena:", font=FONT_SMALL,
+             bg=BG, fg=SUBTEXT).pack(anchor="w", pady=(0, sc(4)))
+
+    display_frame = tk.Frame(inner, bg=ACCENT, padx=1, pady=1)
+    display_frame.pack(fill="x")
+    display_inner = tk.Frame(display_frame, bg=CARD, padx=sc(12), pady=sc(8))
+    display_inner.pack(fill="x")
+
     var = tk.StringVar()
-    entry = tk.Entry(inner, textvariable=var, show="*", bg=CARD, fg=TEXT,
-                     insertbackground=ACCENT, relief="flat", font=FONT_MONO,
-                     bd=0, highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT)
-    entry.pack(fill="x", ipady=sc(6))
-    entry.focus()
+    display_lbl = tk.Label(
+        display_inner,
+        textvariable=var,
+        font=("Courier New", sc(22), "bold"),
+        bg=CARD, fg=ACCENT,
+        anchor="w",
+        width=14
+    )
+    display_lbl.pack(side="left")
+
+    # Cursor parpadeante
+    cursor_visible = [True]
+    cursor_lbl = tk.Label(display_inner, text="▋", font=("Courier New", sc(20), "bold"),
+                          bg=CARD, fg=ACCENT)
+    cursor_lbl.pack(side="left")
+
+    def parpadear():
+        cursor_visible[0] = not cursor_visible[0]
+        cursor_lbl.config(fg=ACCENT if cursor_visible[0] else CARD)
+        dlg.after(500, parpadear)
+    parpadear()
+
+    # Contador de dígitos
+    hint_lbl = tk.Label(inner, text="0 dígitos", font=FONT_SMALL,
+                        bg=BG, fg=SUBTEXT, anchor="e")
+    hint_lbl.pack(fill="x", pady=(sc(2), sc(10)))
+
     result = [None]
-    def confirmar(e=None): result[0] = var.get(); dlg.destroy()
-    def cancelar(): dlg.destroy()
+
+    # ── Funciones del teclado ──
+    def pulsar(digito):
+        actual = var.get()
+        if len(actual) < 12:
+            var.set(actual + "●")  # mostrar punto en lugar del dígito
+            pulsar.real += digito
+            n = len(pulsar.real)
+            hint_lbl.config(text=f"{n} dígito{'s' if n != 1 else ''}", fg=ACCENT2)
+    pulsar.real = ""
+
+    def borrar():
+        actual = var.get()
+        if actual:
+            var.set(actual[:-1])
+            pulsar.real = pulsar.real[:-1]
+            n = len(pulsar.real)
+            hint_lbl.config(
+                text=f"{n} dígito{'s' if n != 1 else ''}" if n > 0 else "0 dígitos",
+                fg=ACCENT2 if n > 0 else SUBTEXT
+            )
+
+    def limpiar():
+        var.set("")
+        pulsar.real = ""
+        hint_lbl.config(text="0 dígitos", fg=SUBTEXT)
+
+    def confirmar():
+        result[0] = pulsar.real
+        dlg.destroy()
+
+    def cancelar():
+        dlg.destroy()
+
+    # ── Teclado numérico táctil ──
+    pad_frame = tk.Frame(inner, bg=BG)
+    pad_frame.pack(fill="x", pady=(0, sc(8)))
+
+    FONT_NUM = ("Courier New", sc(18), "bold")
+
+    # Layout: 3 columnas × 4 filas
+    filas = [
+        ["1", "2", "3"],
+        ["4", "5", "6"],
+        ["7", "8", "9"],
+        ["⌫", "0", "✕"],
+    ]
+
+    for f_idx, fila in enumerate(filas):
+        row = tk.Frame(pad_frame, bg=BG)
+        row.pack(pady=sc(3))
+        for digito in fila:
+            if digito.isdigit():
+                cmd   = lambda d=digito: pulsar(d)
+                color = ACCENT2
+                font  = FONT_NUM
+            elif digito == "⌫":
+                cmd   = borrar
+                color = WARN
+                font  = ("Courier New", sc(16), "bold")
+            else:  # ✕ = limpiar
+                cmd   = limpiar
+                color = DANGER
+                font  = ("Courier New", sc(14), "bold")
+            TeclaNum(row, digito, cmd, color=color, font=font).pack(
+                side="left", padx=sc(4))
+
+    # ── Botones confirmar / cancelar ──
+    sep = tk.Frame(inner, bg=BORDER, height=1)
+    sep.pack(fill="x", pady=(sc(4), sc(10)))
+
     bf = tk.Frame(inner, bg=BG)
-    bf.pack(pady=(sc(14), 0), fill="x")
-    NeonButton(bf, "CONFIRMAR", confirmar, color=ACCENT, btn_width=130, btn_height=36).pack(side="left")
-    NeonButton(bf, "CANCELAR",  cancelar,  color=DANGER, btn_width=130, btn_height=36).pack(side="right")
-    entry.bind("<Return>", confirmar)
+    bf.pack(fill="x")
+
+    NeonButton(bf, "✓ CONFIRMAR", confirmar,
+               color=ACCENT, btn_width=150, btn_height=42).pack(side="left")
+    NeonButton(bf, "✗ CANCELAR",  cancelar,
+               color=DANGER,  btn_width=150, btn_height=42).pack(side="right")
+
     dlg.wait_window()
     return result[0]
+
+
+
+# ─── Teclado QWERTY táctil español ────────────────────────────────────
+def teclado_qwerty(parent_win, entry_widget, titulo="NOMBRE"):
+    """Abre teclado QWERTY español táctil sobre entry_widget.
+    Escribe directamente en el Entry recibido."""
+    kb = tk.Toplevel(parent_win)
+    kb.title("")
+    kb.configure(bg=BG)
+    kb.resizable(False, False)
+    kb.transient(parent_win)
+    kb.focus()
+
+    kb_w = sc(460)
+    kb_h = sc(420)
+    px = parent_win.winfo_x() + (parent_win.winfo_width()  - kb_w) // 2
+    py = parent_win.winfo_y() + (parent_win.winfo_height() - kb_h) // 2
+    kb.geometry(f"{kb_w}x{kb_h}+{px}+{py}")
+
+    outer = tk.Frame(kb, bg=ACCENT2, padx=1, pady=1)
+    outer.pack(fill="both", expand=True, padx=sc(6), pady=sc(6))
+    inner = tk.Frame(outer, bg=BG, padx=sc(10), pady=sc(10))
+    inner.pack(fill="both", expand=True)
+
+    # Título
+    tk.Label(inner, text=f"// {titulo}", font=FONT_LABEL,
+             bg=BG, fg=ACCENT2).pack(anchor="w")
+
+    # Display del texto actual
+    disp_frame = tk.Frame(inner, bg=ACCENT2, padx=1, pady=1)
+    disp_frame.pack(fill="x", pady=(sc(4), sc(8)))
+    disp_inner = tk.Frame(disp_frame, bg=CARD, padx=sc(8), pady=sc(6))
+    disp_inner.pack(fill="x")
+
+    disp_var = tk.StringVar(value=entry_widget.get())
+    disp_lbl = tk.Label(disp_inner, textvariable=disp_var,
+                        font=("Courier New", sc(14), "bold"),
+                        bg=CARD, fg=ACCENT2, anchor="w", width=28)
+    disp_lbl.pack(side="left")
+
+    cursor_v = [True]
+    cur_lbl = tk.Label(disp_inner, text="▋",
+                       font=("Courier New", sc(13), "bold"),
+                       bg=CARD, fg=ACCENT2)
+    cur_lbl.pack(side="left")
+
+    def parpadear():
+        cursor_v[0] = not cursor_v[0]
+        cur_lbl.config(fg=ACCENT2 if cursor_v[0] else CARD)
+        if kb.winfo_exists():
+            kb.after(500, parpadear)
+    parpadear()
+
+    mayus = [False]
+
+    FILAS_LOWER = [
+        ["1","2","3","4","5","6","7","8","9","0"],
+        ["q","w","e","r","t","y","u","i","o","p"],
+        ["a","s","d","f","g","h","j","k","l","ñ"],
+        ["z","x","c","v","b","n","m","á","é","í"],
+        ["ó","ú","ü","@",".","_","-"," ","⌫","↵"],
+    ]
+    FILAS_UPPER = [
+        ["1","2","3","4","5","6","7","8","9","0"],
+        ["Q","W","E","R","T","Y","U","I","O","P"],
+        ["A","S","D","F","G","H","J","K","L","Ñ"],
+        ["Z","X","C","V","B","N","M","Á","É","Í"],
+        ["Ó","Ú","Ü","@",".","_","-"," ","⌫","↵"],
+    ]
+
+    pad = tk.Frame(inner, bg=BG)
+    pad.pack(fill="both", expand=True)
+
+    BTN_W_KB = sc(38)
+    BTN_H_KB = sc(44)
+    FONT_KB   = ("Courier New", sc(12), "bold")
+    FONT_KB_S = ("Courier New", sc(10), "bold")
+
+    teclas_refs = []   # lista de TeclaNum para poder redibujar al cambiar mayús
+
+    def pulsar_tecla(car):
+        if car == "⌫":
+            txt = disp_var.get()
+            disp_var.set(txt[:-1])
+            entry_widget.delete(len(txt)-1, tk.END)
+        elif car == "↵":
+            aplicar()
+        elif car == "⇧":
+            mayus[0] = not mayus[0]
+            redibujar()
+        else:
+            disp_var.set(disp_var.get() + car)
+            entry_widget.insert(tk.END, car)
+            if mayus[0] and car not in "0123456789@._- ":
+                mayus[0] = False
+                redibujar()
+
+    def redibujar():
+        filas = FILAS_UPPER if mayus[0] else FILAS_LOWER
+        for btn, fila_i, col_i in teclas_refs:
+            nuevo = filas[fila_i][col_i]
+            btn._lbl.config(text=nuevo)
+            btn._cmd = lambda c=nuevo: pulsar_tecla(c)
+            # actualizar bindings
+            for w in (btn, btn._inner, btn._lbl):
+                w.bind("<Button-1>", lambda e, c=nuevo: pulsar_tecla(c))
+
+    def aplicar():
+        kb.destroy()
+
+    def cancelar():
+        # Restaurar texto original
+        entry_widget.delete(0, tk.END)
+        entry_widget.insert(0, disp_var.get())
+        kb.destroy()
+
+    filas_act = FILAS_LOWER
+    for fi, fila in enumerate(filas_act):
+        row_f = tk.Frame(pad, bg=BG)
+        row_f.pack(pady=sc(2))
+        for ci, car in enumerate(fila):
+            if car == " ":
+                color = SUBTEXT; ancho = sc(60)
+            elif car in ("⌫", "↵"):
+                color = WARN if car == "⌫" else ACCENT2
+                ancho = sc(52)
+            else:
+                color = ACCENT2; ancho = BTN_W_KB
+            font = FONT_KB_S if car in ("⌫","↵","⇧") else FONT_KB
+            btn = TeclaNum(row_f, car, lambda c=car: pulsar_tecla(c),
+                           color=color, ancho=ancho, alto=BTN_H_KB, font=font)
+            btn.pack(side="left", padx=sc(1))
+            teclas_refs.append((btn, fi, ci))
+
+    # Fila de control: MAYÚS + OK + CANCELAR
+    ctrl = tk.Frame(inner, bg=BG)
+    ctrl.pack(fill="x", pady=(sc(6), 0))
+    NeonButton(ctrl, "⇧ MAYÚS", lambda: [mayus.__setitem__(0, not mayus[0]), redibujar()],
+               color=ACCENT, btn_width=100, btn_height=36).pack(side="left")
+    NeonButton(ctrl, "✓ OK",    aplicar,  color=ACCENT2, btn_width=100, btn_height=36).pack(side="left", padx=sc(6))
+    NeonButton(ctrl, "✗ CERRAR", cancelar, color=DANGER, btn_width=100, btn_height=36).pack(side="right")
+
+    kb.update_idletasks()
+    kb.grab_set()
+    kb.wait_window()
+
+
+# ─── Teclado numérico táctil (para Entry) ──────────────────────────────
+def teclado_numerico(parent_win, entry_widget, titulo="ID USUARIO"):
+    """Abre teclado numérico táctil. Escribe directamente en el Entry."""
+    kb = tk.Toplevel(parent_win)
+    kb.title("")
+    kb.configure(bg=BG)
+    kb.resizable(False, False)
+    kb.transient(parent_win)
+    kb.focus()
+
+    kb_w = sc(320)
+    kb_h = sc(400)
+    px = parent_win.winfo_x() + (parent_win.winfo_width()  - kb_w) // 2
+    py = parent_win.winfo_y() + (parent_win.winfo_height() - kb_h) // 2
+    kb.geometry(f"{kb_w}x{kb_h}+{px}+{py}")
+
+    outer = tk.Frame(kb, bg=ACCENT2, padx=1, pady=1)
+    outer.pack(fill="both", expand=True, padx=sc(6), pady=sc(6))
+    inner = tk.Frame(outer, bg=BG, padx=sc(14), pady=sc(12))
+    inner.pack(fill="both", expand=True)
+
+    tk.Label(inner, text=f"// {titulo}", font=FONT_LABEL,
+             bg=BG, fg=ACCENT2).pack(anchor="w")
+
+    disp_frame = tk.Frame(inner, bg=ACCENT2, padx=1, pady=1)
+    disp_frame.pack(fill="x", pady=(sc(4), sc(10)))
+    disp_inner = tk.Frame(disp_frame, bg=CARD, padx=sc(8), pady=sc(6))
+    disp_inner.pack(fill="x")
+    disp_var = tk.StringVar(value=entry_widget.get())
+    tk.Label(disp_inner, textvariable=disp_var,
+             font=("Courier New", sc(18), "bold"),
+             bg=CARD, fg=ACCENT2, anchor="w", width=12).pack(side="left")
+
+    def pulsar(d):
+        txt = disp_var.get()
+        if len(txt) < 8:
+            disp_var.set(txt + d)
+            entry_widget.insert(tk.END, d)
+
+    def borrar():
+        txt = disp_var.get()
+        if txt:
+            disp_var.set(txt[:-1])
+            entry_widget.delete(len(txt)-1, tk.END)
+
+    def limpiar():
+        disp_var.set("")
+        entry_widget.delete(0, tk.END)
+
+    def aplicar():
+        kb.destroy()
+
+    pad = tk.Frame(inner, bg=BG)
+    pad.pack()
+    FONT_NUM_KB = ("Courier New", sc(16), "bold")
+    filas = [["1","2","3"],["4","5","6"],["7","8","9"],["⌫","0","✕"]]
+    for fila in filas:
+        row_f = tk.Frame(pad, bg=BG)
+        row_f.pack(pady=sc(3))
+        for car in fila:
+            if car.isdigit():
+                cmd = lambda d=car: pulsar(d); color = ACCENT2
+            elif car == "⌫":
+                cmd = borrar; color = WARN
+            else:
+                cmd = limpiar; color = DANGER
+            TeclaNum(row_f, car, cmd, color=color,
+                     ancho=sc(76), alto=sc(54), font=FONT_NUM_KB).pack(side="left", padx=sc(4))
+
+    NeonButton(inner, "✓ CONFIRMAR", aplicar,
+               color=ACCENT2, btn_width=220, btn_height=40).pack(pady=(sc(10), 0))
+
+    kb.update_idletasks()
+    kb.grab_set()
+    kb.wait_window()
 
 
 # ─── Gestión de usuarios ───────────────────────────────────────────────
@@ -385,17 +779,35 @@ def ventana_registro():
         bar_canvas.create_rectangle(0, 0, bw, sc(6), fill=BORDER, outline="")
         bar_canvas.create_rectangle(0, 0, filled, sc(6), fill=ACCENT2, outline="")
 
-    def campo(lbl_txt):
+    def campo_tactil(lbl_txt, teclado_fn, titulo_kb):
+        """Campo Entry que al tocarlo abre el teclado táctil correspondiente."""
         tk.Label(inner, text=lbl_txt, font=FONT_SMALL,
                  bg=BG, fg=SUBTEXT).pack(anchor="w", pady=(sc(8), sc(2)))
-        e = tk.Entry(inner, bg=CARD, fg=TEXT, insertbackground=ACCENT2,
+        marco = tk.Frame(inner, bg=ACCENT2, padx=1, pady=1)
+        marco.pack(fill="x")
+        e = tk.Entry(marco, bg=CARD, fg=TEXT, insertbackground=ACCENT2,
                      relief="flat", font=FONT_MONO, bd=0,
-                     highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT2)
-        e.pack(fill="x", ipady=sc(6))
+                     highlightthickness=0, cursor="hand2",
+                     state="readonly",          # solo escritura por teclado táctil
+                     readonlybackground=CARD)
+        e.pack(fill="x", ipady=sc(8), padx=sc(2), pady=sc(2))
+        icono = tk.Label(marco, text="⌨", font=FONT_SMALL,
+                         bg=CARD, fg=SUBTEXT, cursor="hand2")
+        icono.pack(side="right", padx=sc(6))
+
+        def abrir_kb(event=None):
+            # Temporalmente hacer editable para que el teclado pueda insertar
+            e.config(state="normal")
+            teclado_fn(win, e, titulo_kb)
+            e.config(state="readonly")
+
+        e.bind("<Button-1>", abrir_kb)
+        icono.bind("<Button-1>", abrir_kb)
+        marco.bind("<Button-1>", abrir_kb)
         return e
 
-    e_nombre = campo("Nombre completo")
-    e_id     = campo("ID de usuario (numero)")
+    e_nombre = campo_tactil("Nombre completo",       teclado_qwerty,   "NOMBRE")
+    e_id     = campo_tactil("ID de usuario (numero)", teclado_numerico, "ID USUARIO")
 
     reg_frame_q    = queue.Queue(maxsize=2)
     reg_progreso_q = queue.Queue()
@@ -556,6 +968,8 @@ def _on_resultado(resultado):
     if resultado and "Bienvenido" in resultado:
         status_lbl.config(text="ACCESO OK", fg=SUCCESS)
         mostrar_notif("ACCESO CONCEDIDO", resultado, SUCCESS)
+        activar_rele()
+        ultimo_uso = time.time()
     elif resultado == "Acceso denegado":
         status_lbl.config(text="DENEGADO", fg=DANGER)
         mostrar_notif("ACCESO DENEGADO", "Usuario no autorizado", DANGER)
