@@ -24,7 +24,7 @@ def registrar_usuario_thread(nombre, user_id, frame_queue, progreso_queue, stop_
     )
 
     contador = 0
-    total    = 30
+    total    = 100
 
     while contador < total and not stop_event.is_set():
         ret, frame = cap.read()

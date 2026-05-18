@@ -6,7 +6,17 @@ import shutil
 import cv2
 import numpy as np
 from PIL import Image, ImageTk
-from gpio_control import activar_rele
+
+# ─── GPIO: forzar pin 18 en LOW desde el inicio ────────────────────────
+try:
+    import RPi.GPIO as GPIO
+    GPIO.setwarnings(False)
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(18, GPIO.OUT)
+    GPIO.output(18, GPIO.HIGH)
+    print("[GPIO] Pin 18 inicializado en HIGH (rele LOW level = apagado)")
+except Exception:
+    pass
 
 from entrenamiento import entrenar_modelo
 from login import iniciar_sesion_thread
@@ -38,10 +48,10 @@ root.withdraw()   # ocultar mientras calculamos
 SCREEN_W = root.winfo_screenwidth()
 SCREEN_H = root.winfo_screenheight()
 
-# Diseño base: 420 x 660  (resolución de referencia)
-BASE_W, BASE_H = 420, 660
-S = min(SCREEN_W / BASE_W, SCREEN_H / BASE_H)   # factor de escala
-S = max(0.5, min(S, 2.0))                        # límites: 50% – 200%
+# Pantalla completa: escala basada en 800x480 (resolución típica RPi touchscreen)
+BASE_W, BASE_H = 800, 480
+S = min(SCREEN_W / BASE_W, SCREEN_H / BASE_H)
+S = max(0.5, min(S, 3.0))
 
 def sc(n):
     """Escala un valor numérico (px, padding, tamaño de fuente)."""
@@ -55,8 +65,8 @@ FONT_BTN   = ("Courier New", sc(11), "bold")
 FONT_MONO  = ("Courier New", sc(10))
 
 # ─── Visor de cámara escalado ──────────────────────────────────────────
-CAM_W = sc(320)
-CAM_H = sc(200)
+CAM_W = sc(460)
+CAM_H = sc(300)
 
 # ─── Tamaños de ventana escalados ──────────────────────────────────────
 WIN_W = sc(BASE_W)
@@ -764,14 +774,14 @@ def ventana_registro():
     prog_lbl = tk.Label(prog_bar_frame, text="EN ESPERA",
                          font=FONT_SMALL, bg=CARD, fg=SUBTEXT, anchor="w")
     prog_lbl.pack(side="left", padx=sc(8), fill="y")
-    prog_count = tk.Label(prog_bar_frame, text="0/30",
+    prog_count = tk.Label(prog_bar_frame, text="0/100",
                            font=FONT_SMALL, bg=CARD, fg=ACCENT2, anchor="e")
     prog_count.pack(side="right", padx=sc(8), fill="y")
 
     bar_canvas = tk.Canvas(inner, bg=CARD, height=sc(6), highlightthickness=0)
     bar_canvas.pack(fill="x", pady=(sc(2), sc(8)))
 
-    def actualizar_barra(n, total=30):
+    def actualizar_barra(n, total=100):
         bar_canvas.delete("all")
         bw = bar_canvas.winfo_width()
         if bw < 2: return
@@ -834,8 +844,8 @@ def ventana_registro():
                     terminar_registro(exito=False); return
                 elif msg == "ENTRENANDO":
                     prog_lbl.config(text="Entrenando modelo...", fg=ACCENT)
-                    prog_count.config(text="30/30")
-                    actualizar_barra(30)
+                    prog_count.config(text="100/100")
+                    actualizar_barra(100)
                     win.update()
                     entrenar_modelo()
                     terminar_registro(exito=True); return
@@ -943,7 +953,7 @@ def iniciar_login():
     _stop_evt   = threading.Event()
     _cam_activa = True
     btn_login.habilitar(False)
-    status_lbl.config(text="ESCANEANDO...", fg=ACCENT)
+    status_lbl.config(text="● ESCANEANDO...", fg=ACCENT)
     threading.Thread(target=iniciar_sesion_thread,
                      args=(_frame_q, _result_q, _stop_evt),
                      daemon=True).start()
@@ -957,6 +967,14 @@ def cancelar_camara():
     if _stop_evt: _stop_evt.set()
     if _poll_id: root.after_cancel(_poll_id); _poll_id = None
     _cam_activa = False
+    # Apagar relé al salir
+    try:
+        import RPi.GPIO as GPIO
+        GPIO.output(18, GPIO.HIGH)  # HIGH = apagado (LOW level relay)
+        GPIO.cleanup()
+        print("[GPIO] Rele apagado al cerrar")
+    except Exception:
+        pass
     root.destroy()   # cierra la app completamente
 
 
@@ -966,80 +984,121 @@ def _on_resultado(resultado):
     if _poll_id: root.after_cancel(_poll_id); _poll_id = None
     btn_login.habilitar(True)
     if resultado and "Bienvenido" in resultado:
-        status_lbl.config(text="ACCESO OK", fg=SUCCESS)
+        status_lbl.config(text="● ACCESO OK", fg=SUCCESS)
         mostrar_notif("ACCESO CONCEDIDO", resultado, SUCCESS)
-        activar_rele()
         ultimo_uso = time.time()
     elif resultado == "Acceso denegado":
-        status_lbl.config(text="DENEGADO", fg=DANGER)
+        status_lbl.config(text="● DENEGADO", fg=DANGER)
         mostrar_notif("ACCESO DENEGADO", "Usuario no autorizado", DANGER)
     else:
-        status_lbl.config(text="EN ESPERA", fg=SUBTEXT)
+        status_lbl.config(text="● EN ESPERA", fg=SUBTEXT)
         mostrar_notif("INFO", resultado or "Cancelado", SUBTEXT)
     ph = placeholder_tk(CAM_W, CAM_H, "SIN SENAL", "Presiona  INICIAR SESION")
     cam_label.config(image=ph); cam_label.image = ph
 
 
 # ─── Ventana principal ─────────────────────────────────────────────────
-root.deiconify()   # mostrar ahora que todo está listo
+root.deiconify()
 root.title("Sistema Moto Inteligente")
 root.configure(bg=BG)
 root.resizable(False, False)
+root.geometry(f"{SCREEN_W}x{SCREEN_H}+0+0")
+root.attributes('-fullscreen', True)
+root.bind('<Escape>', lambda e: None)  # deshabilitar ESC para no salir accidentalmente
 
-sx = (SCREEN_W - WIN_W) // 2
-sy = (SCREEN_H - WIN_H) // 2
-root.geometry(f"{WIN_W}x{WIN_H}+{sx}+{sy}")
+# ════════════════════════════════════════════════════════════════
+# LAYOUT PANTALLA COMPLETA  —  dos columnas: cámara | controles
+# ════════════════════════════════════════════════════════════════
 
-# ── Header ──
-header = tk.Frame(root, bg=BG)
-header.pack(fill="x", padx=sc(30), pady=(sc(18), 0))
-tk.Label(header, text="MOTO", font=FONT_TITLE, bg=BG, fg=ACCENT).pack(side="left")
-tk.Label(header, text="ID",   font=FONT_TITLE, bg=BG, fg=TEXT).pack(side="left")
-tk.Frame(root, bg=ACCENT, height=1).pack(fill="x", padx=sc(30), pady=(sc(4), 0))
-tk.Label(root, text="Sistema de encendido por reconocimiento facial",
-         font=FONT_SMALL, bg=BG, fg=SUBTEXT).pack(pady=(sc(3), 0))
+# ── Header barra superior ──
+topbar = tk.Frame(root, bg=CARD, height=sc(48))
+topbar.pack(fill="x")
+topbar.pack_propagate(False)
+tk.Label(topbar, text="MOTO", font=("Courier New", sc(22), "bold"),
+         bg=CARD, fg=ACCENT).pack(side="left", padx=sc(20))
+tk.Label(topbar, text="ID", font=("Courier New", sc(22), "bold"),
+         bg=CARD, fg=TEXT).pack(side="left")
+tk.Frame(topbar, bg=BORDER, width=1).pack(side="left", fill="y", padx=sc(16))
+tk.Label(topbar, text="Sistema de encendido por reconocimiento facial",
+         font=FONT_SMALL, bg=CARD, fg=SUBTEXT).pack(side="left")
+status_lbl = tk.Label(topbar, text="● EN ESPERA", font=FONT_LABEL,
+                       bg=CARD, fg=SUBTEXT, anchor="e")
+status_lbl.pack(side="right", padx=sc(20))
+tk.Frame(root, bg=ACCENT, height=2).pack(fill="x")
 
-# ── Visor login ──
-cam_outer = tk.Frame(root, bg=ACCENT, padx=1, pady=1)
-cam_outer.pack(padx=sc(30), pady=(sc(10), 0))
+# ── Cuerpo principal en dos columnas ──
+body = tk.Frame(root, bg=BG)
+body.pack(fill="both", expand=True)
+
+# ── Columna izquierda: cámara ──
+col_left = tk.Frame(body, bg=BG)
+col_left.pack(side="left", fill="both", expand=True, padx=sc(20), pady=sc(16))
+
+tk.Label(col_left, text="// VISOR EN VIVO", font=FONT_LABEL,
+         bg=BG, fg=ACCENT).pack(anchor="w", pady=(0, sc(6)))
+
+cam_outer = tk.Frame(col_left, bg=ACCENT, padx=2, pady=2)
+cam_outer.pack()
 cam_label = tk.Label(cam_outer, bg="black", width=CAM_W, height=CAM_H)
 cam_label.pack()
 root.update_idletasks()
 ph_init = placeholder_tk(CAM_W, CAM_H, "SIN SENAL", "Presiona  INICIAR SESION")
 cam_label.config(image=ph_init); cam_label.image = ph_init
 
-# ── Barra de estado ──
-cam_bar = tk.Frame(root, bg=CARD)
-cam_bar.pack(fill="x", padx=sc(30))
-status_lbl = tk.Label(cam_bar, text="EN ESPERA", font=FONT_SMALL,
-                       bg=CARD, fg=SUBTEXT, anchor="w")
-status_lbl.pack(side="left", padx=sc(8), pady=sc(4))
-NeonButton(cam_bar, "CANCELAR", cancelar_camara,
-           color=DANGER, btn_width=90, btn_height=26).pack(side="right", padx=sc(6), pady=sc(3))
+# Barra de estado bajo la cámara
+cam_bar = tk.Frame(col_left, bg=CARD)
+cam_bar.pack(fill="x", pady=(sc(6), 0))
+tk.Label(cam_bar, text="ESTADO:", font=FONT_SMALL,
+         bg=CARD, fg=SUBTEXT).pack(side="left", padx=sc(8), pady=sc(5))
+NeonButton(cam_bar, "⏹ CANCELAR", cancelar_camara,
+           color=DANGER, btn_width=110, btn_height=28).pack(side="right", padx=sc(6), pady=sc(4))
 
-tk.Frame(root, bg=BORDER, height=1).pack(fill="x", padx=sc(30), pady=(sc(10), 0))
+# ── Separador vertical ──
+tk.Frame(body, bg=BORDER, width=1).pack(side="left", fill="y", pady=sc(10))
 
-# ── Botones principales ──
-btn_area = tk.Frame(root, bg=BG)
-btn_area.pack(pady=sc(10))
+# ── Columna derecha: controles ──
+col_right = tk.Frame(body, bg=BG)
+col_right.pack(side="left", fill="both", padx=sc(24), pady=sc(16))
+
+tk.Label(col_right, text="// CONTROL DE ACCESO", font=FONT_LABEL,
+         bg=BG, fg=ACCENT2).pack(anchor="w")
+tk.Frame(col_right, bg=ACCENT2, height=1).pack(fill="x", pady=(sc(4), sc(20)))
+
+btn_area = col_right
 
 btn_login = NeonButton(btn_area, "> INICIAR SESION", iniciar_login,
-                        color=ACCENT, btn_width=320, btn_height=48)
-btn_login.pack(pady=sc(5))
+                        color=ACCENT, btn_width=280, btn_height=56)
+btn_login.pack(pady=sc(8))
 
 NeonButton(btn_area, "+ REGISTRAR USUARIO", ventana_registro,
-           color=ACCENT2, btn_width=320, btn_height=48).pack(pady=sc(5))
+           color=ACCENT2, btn_width=280, btn_height=56).pack(pady=sc(8))
 
 NeonButton(btn_area, "  GESTIONAR USUARIOS", ventana_usuarios,
-           color=WARN, btn_width=320, btn_height=48).pack(pady=sc(5))
+           color=WARN, btn_width=280, btn_height=56).pack(pady=sc(8))
+
+# ── Info del sistema en columna derecha ──
+tk.Frame(col_right, bg=BORDER, height=1).pack(fill="x", pady=(sc(20), sc(10)))
+info_box = tk.Frame(col_right, bg=CARD, padx=sc(12), pady=sc(10))
+info_box.pack(fill="x")
+tk.Label(info_box, text="// SISTEMA", font=FONT_SMALL,
+         bg=CARD, fg=SUBTEXT).pack(anchor="w")
+tk.Label(info_box, text=f"Resolucion:  {SCREEN_W} x {SCREEN_H}",
+         font=FONT_SMALL, bg=CARD, fg=TEXT).pack(anchor="w", pady=(sc(4),0))
+tk.Label(info_box, text=f"Escala:      {S:.2f}x",
+         font=FONT_SMALL, bg=CARD, fg=TEXT).pack(anchor="w")
+tk.Label(info_box, text=f"Version:     v3.1 fullscreen",
+         font=FONT_SMALL, bg=CARD, fg=TEXT).pack(anchor="w")
+tk.Label(info_box, text="Estado GPIO: pin 18 LOW-level",
+         font=FONT_SMALL, bg=CARD, fg=SUCCESS).pack(anchor="w", pady=(0, sc(2)))
 
 # ── Footer ──
-tk.Frame(root, bg=BORDER, height=1).pack(fill="x", padx=sc(30))
-footer = tk.Frame(root, bg=BG)
-footer.pack(fill="x", padx=sc(30), pady=sc(8))
-tk.Label(footer, text=f"v3.0  //  {SCREEN_W}x{SCREEN_H}  //  escala {S:.2f}x",
-         font=FONT_SMALL, bg=BG, fg=SUBTEXT).pack(side="left")
-tk.Label(footer, text="[*] ONLINE",
-         font=FONT_SMALL, bg=BG, fg=SUCCESS).pack(side="right")
+tk.Frame(root, bg=BORDER, height=1).pack(fill="x")
+footer = tk.Frame(root, bg=CARD, height=sc(28))
+footer.pack(fill="x")
+footer.pack_propagate(False)
+tk.Label(footer, text="[*] ONLINE  //  MotoID Security System",
+         font=FONT_SMALL, bg=CARD, fg=SUCCESS).pack(side="left", padx=sc(16))
+tk.Label(footer, text="Toca INICIAR SESION y mira la camara",
+         font=FONT_SMALL, bg=CARD, fg=SUBTEXT).pack(side="right", padx=sc(16))
 
 root.mainloop()

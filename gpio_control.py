@@ -1,4 +1,4 @@
-﻿import time
+import time
 
 try:
     import RPi.GPIO as GPIO  # type: ignore
@@ -14,7 +14,7 @@ def activar_rele():
 
     GPIO.setmode(GPIO.BCM)
 
-    PIN_RELE = 21
+    PIN_RELE = 18
     GPIO.setup(PIN_RELE, GPIO.OUT)
 
     GPIO.output(PIN_RELE, GPIO.HIGH)
